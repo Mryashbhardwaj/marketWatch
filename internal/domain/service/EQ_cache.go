@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	MC "github.com/Mryashbhardwaj/marketAnalysis/internal/clients/moneyControl"
@@ -134,26 +135,47 @@ func fetchTradeHistories(script ScriptName) ([]models.EquityPriceData, error) {
 }
 
 func BuildPriceHistoryCache() error {
-	var errorList []string
+	var (
+		mu        sync.Mutex
+		errorList []string
+		wg        sync.WaitGroup
+		semaphore = make(chan struct{}, 5) // 5 requests
+	)
+
 	for _, symbol := range EquityTradebookCache.AllScripts {
-		history, err := fetchTradeHistories(symbol)
-		if err != nil {
-			fmt.Printf("error fetching history for %s, err:%s", symbol, err.Error())
-			errorList = append(errorList, fmt.Sprintf("error fetching history for %s, err:%s", symbol, err.Error()))
-			continue
-		}
-		shareHistory[symbol] = history
-		err = persistInFile(string(symbol), history)
-		if err != nil {
-			fmt.Printf("error persisting history for %s, err:%s", symbol, err.Error())
-			errorList = append(errorList, fmt.Sprintf("error persisting history for %s, err:%s", symbol, err.Error()))
-			continue
-		}
+		wg.Add(1)
+
+		go func(sym ScriptName) {
+			defer wg.Done()
+
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			fmt.Printf("Processing EQ: %s\n", sym)
+
+			history, err := fetchTradeHistories(sym)
+			if err != nil {
+				mu.Lock()
+				errorList = append(errorList, fmt.Sprintf("error fetching history for %s: %s", sym, err.Error()))
+				mu.Unlock()
+				return
+			}
+
+			shareHistory[sym] = history
+
+			if err := persistInFile(string(sym), history); err != nil {
+				mu.Lock()
+				errorList = append(errorList, fmt.Sprintf("error persisting history for %s: %s", sym, err.Error()))
+				mu.Unlock()
+			}
+		}(symbol)
 	}
-	if len(errorList) == 0 {
-		return nil
+
+	wg.Wait()
+
+	if len(errorList) > 0 {
+		return errors.New(strings.Join(errorList, "\n"))
 	}
-	return errors.New(strings.Join(errorList, "\n"))
+	return nil
 }
 
 func buildEquityCacheFromFile(symbol ScriptName) ([]models.EquityPriceData, error) {

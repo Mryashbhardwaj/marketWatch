@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	MC "github.com/Mryashbhardwaj/marketAnalysis/internal/clients/moneyControl"
@@ -164,26 +165,52 @@ func persistMFInFile(symbol string, trend interface{}) error {
 
 // persist call comes from here for mf
 func BuildMFPriceHistoryCache() error {
-	var errorList []string
+	var (
+		mu        sync.Mutex
+		errorList []string
+		wg        sync.WaitGroup
+	)
+	semaphore := make(chan struct{}, 5)
+
 	for name, isin := range MutualFundsTradebookCache.AllFunds {
-		history, err := MC.GetMFHistoryFromMoneyControll(string(isin))
-		if err != nil {
-			fmt.Printf("error fetching history for MF %s, err:%s", name, err.Error())
-			errorList = append(errorList, fmt.Sprintf("error fetching history for %s, err:%s", isin, err.Error()))
-			continue
-		}
-		mutualFundsHistory[isin] = history
-		err = persistMFInFile(string(isin), history)
-		if err != nil {
-			fmt.Printf("error persisting history for %s, err:%s", isin, err.Error())
-			errorList = append(errorList, fmt.Sprintf("error persisting history for %s, err:%s", isin, err.Error()))
-			continue
-		}
+		wg.Add(1)
+
+		go func(name FundName, isin ISIN) {
+			defer wg.Done()
+
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			start := time.Now()
+			fmt.Printf("Processing MF: %s\n", name)
+
+			history, err := MC.GetMFHistoryFromMoneyControll(string(isin))
+			fmt.Printf("%s fetched in %v\n", name, time.Since(start))
+
+			if err != nil {
+				mu.Lock()
+				errorList = append(errorList,
+					fmt.Sprintf("error fetching history for MF %s: %s", name, err.Error()))
+				mu.Unlock()
+				return
+			}
+
+			mutualFundsHistory[isin] = history
+
+			if err := persistMFInFile(string(isin), history); err != nil {
+				mu.Lock()
+				errorList = append(errorList,
+					fmt.Sprintf("error persisting history for MF %s: %s", name, err.Error()))
+				mu.Unlock()
+			}
+		}(name, isin)
 	}
-	if len(errorList) == 0 {
-		return nil
+	wg.Wait()
+
+	if len(errorList) > 0 {
+		return errors.New(strings.Join(errorList, "\n"))
 	}
-	return errors.New(strings.Join(errorList, "\n"))
+	return nil
 }
 
 func buildFundsCacheFromFile(symbol ISIN) ([]models.MFPriceData, error) {
