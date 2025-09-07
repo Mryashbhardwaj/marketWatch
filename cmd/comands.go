@@ -4,7 +4,6 @@ import (
 	"github.com/MakeNowJust/heredoc"
 
 	"github.com/Mryashbhardwaj/marketAnalysis/cmd/server"
-	"github.com/Mryashbhardwaj/marketAnalysis/cmd/trends"
 	cli "github.com/spf13/cobra"
 )
 
@@ -32,7 +31,6 @@ func New() *cli.Command {
 	// Client related commands
 	cmd.AddCommand(
 		server.NewServeCommand(),
-		trends.NewFetchCommand(),
 	)
 
 	return cmd

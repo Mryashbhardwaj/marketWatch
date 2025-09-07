@@ -1,17 +1,18 @@
 package service
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"math"
-	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Mryashbhardwaj/marketAnalysis/internal/domain/models"
 	"github.com/Mryashbhardwaj/marketAnalysis/internal/utils"
+	"github.com/pkg/errors"
 )
 
 type TradeRecord struct {
@@ -32,56 +33,211 @@ type BreakdownResponse struct {
 	TradeHistory    []TradeRecord `json:"trade_history"`
 }
 
-func GetMutualFundsList() []string {
-	var fundList []string
-	for fundName, insi := range MutualFundsTradebookCache.AllFunds {
-		fundList = append(fundList, fmt.Sprintf("%s:%s", fundName, insi))
-	}
-	return fundList
+type EquityTradebook struct {
+	AllShares       []ScriptName
+	EquityTradebook map[ScriptName][]EquityTrade
 }
 
-func GetEquityList() []ScriptName {
-	return EquityTradebookCache.AllScripts
+type MutualFundsTradebook struct {
+	AllFunds             map[FundName]ISIN
+	ISINToFundName       map[ISIN]FundName
+	MutualFundsTradebook map[ISIN][]MutualFundsTrade
 }
 
-func GetMFPriceTrendInTimeRange(symbol string, from, to time.Time) []models.EquityPriceData {
-	if len(shareHistory[ScriptName(symbol)]) == 0 {
-		return nil
-	}
-	startIndex := utils.MomentBinarySearch(shareHistory[ScriptName(symbol)], from)
-	endIndex := utils.MomentBinarySearch(shareHistory[ScriptName(symbol)], to)
-
-	requestedRange := shareHistory[ScriptName(symbol)][startIndex:endIndex]
-	if len(requestedRange) == 0 {
-		return nil
-	}
-	startPrice := requestedRange[0].Close
-	for i := range requestedRange {
-		requestedRange[i].PercentChange = ((requestedRange[i].Close - startPrice) / startPrice) * 100
-	}
-	return requestedRange
+type TradebookService struct {
+	logger                    *slog.Logger
+	EquityTradebookCache      *EquityTradebook
+	MutualFundsTradebookCache *MutualFundsTradebook
 }
 
-func GetPriceTrendInTimeRange(symbol string, from, to time.Time) []models.EquityPriceData {
-	if len(shareHistory[ScriptName(symbol)]) == 0 {
-		return nil
+func GetTradebookService(eqTradebookDir, mfTradebookDir string, logger *slog.Logger) (*TradebookService, error) {
+	if mfTradebookDir == "" && eqTradebookDir == "" {
+		return nil, errors.Errorf("no tradefiles directory set for equity or mutual funds")
 	}
-	startIndex := utils.MomentBinarySearch(shareHistory[ScriptName(symbol)], from)
-	endIndex := utils.MomentBinarySearch(shareHistory[ScriptName(symbol)], to)
 
-	requestedRange := shareHistory[ScriptName(symbol)][startIndex:endIndex]
-	if len(requestedRange) == 0 {
-		return nil
+	t := &TradebookService{
+		logger: logger,
 	}
-	startPrice := requestedRange[0].Close
-	for i := range requestedRange {
-		requestedRange[i].PercentChange = ((requestedRange[i].Close - startPrice) / startPrice) * 100
+	if mfTradebookDir != "" {
+		err := t.BuildMFTradeBook(mfTradebookDir)
+		if err != nil {
+			logger.Error("failed to get mutual funds tradebook", slog.String("error", err.Error()))
+			return nil, err
+		}
 	}
-	return requestedRange
+
+	if eqTradebookDir != "" {
+		err := t.BuildEquityTradeBook(eqTradebookDir)
+		if err != nil {
+			logger.Error("failed to build equity tradebook", slog.String("error", err.Error()))
+			return nil, err
+		}
+	}
+
+	return t, nil
 }
 
-func GetPriceMFPositionsInTimeRange(symbol string, from, to time.Time) []models.MFHoldingsData {
-	requestedRange := MutualFundsTradebookCache.MutualFundsTradebook[ISIN(symbol)]
+func (t *TradebookService) BuildMFTradeBook(tradebookDir string) error {
+	var mutualFundsTradebookCache MutualFundsTradebook
+	tradeMap, allFunds, err := readMFTradeFiles(tradebookDir)
+	if err != nil {
+		return errors.Wrap(err, "unable to read MF trade file")
+	}
+	mutualFundsTradebookCache.MutualFundsTradebook = tradeMap
+	mutualFundsTradebookCache.AllFunds = allFunds
+	mutualFundsTradebookCache.ISINToFundName = make(map[ISIN]FundName)
+	for k, v := range allFunds {
+		mutualFundsTradebookCache.ISINToFundName[v] = k
+	}
+	t.MutualFundsTradebookCache = &mutualFundsTradebookCache
+
+	return nil
+}
+
+// explain the purpose of this function
+func readMFTradeFiles(tradebookDir string) (map[ISIN][]MutualFundsTrade, map[FundName]ISIN, error) {
+	// to remove duplidate trade ids
+	tradeSet := make(map[string]struct{})
+	allFunds := make(map[FundName]ISIN)
+
+	tradeFiles, err := utils.ReadDir(tradebookDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	tradebookCSV, err := utils.ReadCSV(tradeFiles)
+	if err != nil {
+		return nil, nil, err
+	}
+	tradebook := make(map[ISIN][]MutualFundsTrade)
+	// avoid magic numbers, instead of 10 it should be index of trade_id
+	for _, record := range tradebookCSV {
+		if record[0] == "symbol" { //suh handling shoul dnot be needed, instead handle using skip header
+			continue
+		}
+		if _, ok := tradeSet[record[10]]; ok {
+			continue
+		}
+		tradeSet[record[10]] = struct{}{}
+
+		symbol := FundName(record[0])
+		isin := ISIN(record[1])
+		allFunds[symbol] = isin
+		if _, ok := tradebook[isin]; !ok {
+			tradebook[isin] = []MutualFundsTrade{}
+		}
+
+		tradeTime, err := time.Parse(time.DateOnly, record[2])
+		if err != nil {
+			return nil, nil, err
+		}
+
+		quantityString := record[8]
+		quantity, err := strconv.ParseFloat(quantityString, 64)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		priceString := record[9]
+		price, err := strconv.ParseFloat(priceString, 64)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		tradebook[isin] = append(tradebook[isin], MutualFundsTrade{
+			Isin:               record[1],
+			TradeDate:          tradeTime,
+			Exchange:           record[3],
+			Segment:            record[4],
+			Series:             record[5],
+			TradeType:          record[6],
+			Auction:            record[7],
+			Quantity:           quantity,
+			Price:              price,
+			TradeID:            record[10],
+			OrderID:            record[11],
+			OrderExecutionTime: record[12],
+		})
+
+	}
+
+	for isin := range tradebook {
+		sort.Slice(tradebook[isin], func(i, j int) bool {
+			return tradebook[isin][i].TradeDate.Before(tradebook[isin][j].TradeDate)
+		})
+	}
+
+	return tradebook, allFunds, nil
+}
+
+func (t *TradebookService) BuildEquityTradeBook(tradebookDir string) error {
+	tradeMap, err := readEquityTradeFiles(tradebookDir)
+	if err != nil {
+		return err
+	}
+
+	var trickers []ScriptName
+	for fundName := range tradeMap {
+		trickers = append(trickers, fundName)
+	}
+
+	var EquityTradebookCache EquityTradebook
+	EquityTradebookCache.AllShares = trickers
+	EquityTradebookCache.EquityTradebook = tradeMap
+
+	t.EquityTradebookCache = &EquityTradebookCache
+	return nil
+}
+
+func (t *TradebookService) GetMutualFundsList() map[FundName]ISIN {
+	return t.MutualFundsTradebookCache.AllFunds
+}
+
+func (t *TradebookService) GetEquityList() []ScriptName {
+	return t.EquityTradebookCache.AllShares
+}
+
+func readEquityTradeFiles(tradebookDir string) (map[ScriptName][]EquityTrade, error) {
+	// to remove duplidate trade ids
+	tradeSet := make(map[string]struct{})
+
+	tradeFiles, err := utils.ReadDir(tradebookDir)
+	if err != nil {
+		return nil, err
+	}
+	tradebookCSV, err := utils.ReadCSV(tradeFiles)
+	if err != nil {
+		return nil, err
+	}
+	tradebook := make(map[ScriptName][]EquityTrade)
+	for _, record := range tradebookCSV {
+		if record[1] == "symbol" {
+			continue
+		}
+		if _, ok := tradeSet[record[10]]; ok {
+			continue
+		}
+		tradeSet[record[10]] = struct{}{}
+
+		symbol := ScriptName(record[0])
+		if _, ok := tradebook[symbol]; !ok {
+			tradebook[symbol] = []EquityTrade{}
+		}
+		tradebook[symbol] = append(tradebook[symbol], EquityTrade{
+			Symbol:             record[1],
+			TradeDate:          record[2],
+			Exchange:           record[3],
+			Segment:            record[4],
+			TradeType:          record[6],
+			Quantity:           record[8],
+			Price:              record[9],
+			OrderExecutionTime: record[12],
+		})
+	}
+	return tradebook, nil
+}
+
+func (t *TradebookService) GetPriceMFPositionsInTimeRange(symbol string, from, to time.Time) []models.MFHoldingsData {
+	requestedRange := t.MutualFundsTradebookCache.MutualFundsTradebook[ISIN(symbol)]
 	if len(requestedRange) == 0 {
 		return nil
 	}
@@ -109,8 +265,9 @@ func GetPriceMFPositionsInTimeRange(symbol string, from, to time.Time) []models.
 	return holdings
 }
 
-func getCAGR(isin ISIN, from, to time.Time) float64 {
-	priceHistory := mutualFundsHistory[isin]
+// todo: this should be removed
+func (t *TradebookService) getCAGR(isin ISIN, from, to time.Time) float64 {
+	priceHistory := t.MutualFundsTradebookCache.MutualFundsTradebook[isin]
 	if len(priceHistory) == 0 {
 		return 0
 	}
@@ -127,8 +284,9 @@ func getCAGR(isin ISIN, from, to time.Time) float64 {
 	return cagr
 }
 
-func getXIRR(isin ISIN, from, to time.Time, currentValue float64) float64 {
-	tradeHistory := MutualFundsTradebookCache.MutualFundsTradebook[isin]
+// todo: this should be removed
+func (t *TradebookService) getXIRR(isin ISIN, from, to time.Time, currentValue float64) float64 {
+	tradeHistory := t.MutualFundsTradebookCache.MutualFundsTradebook[isin]
 	startIndex := utils.MomentBinarySearch(tradeHistory, from)
 	array := []MutualFundsTrade{}
 	for _, v := range tradeHistory[startIndex:] {
@@ -149,10 +307,10 @@ func getXIRR(isin ISIN, from, to time.Time, currentValue float64) float64 {
 	return xirr
 }
 
-func GetMFSummmary(from, to time.Time) []models.MFSummary {
+func (t *TradebookService) GetMFSummmary(from, to time.Time) []models.MFSummary {
 	var summary []models.MFSummary
-	for isin, trades := range MutualFundsTradebookCache.MutualFundsTradebook {
-		fmt.Println("starting calculation for ", string(MutualFundsTradebookCache.GetFundNameFromISIN(isin)))
+	for isin, trades := range t.MutualFundsTradebookCache.MutualFundsTradebook {
+		fmt.Println("starting calculation for ", string(t.GetFundNameFromISIN(isin)))
 		if len(trades) == 0 {
 			continue
 		}
@@ -184,7 +342,7 @@ func GetMFSummmary(from, to time.Time) []models.MFSummary {
 			}
 		}
 
-		priceHistory := mutualFundsHistory[isin]
+		priceHistory := t.MutualFundsTradebookCache.MutualFundsTradebook[isin]
 		if len(priceHistory) == 0 {
 			log.Printf("unable to compute summary, price history not found for %s", isin)
 			continue
@@ -202,12 +360,12 @@ func GetMFSummmary(from, to time.Time) []models.MFSummary {
 		currentValue := math.Ceil(heldUnits) * currentPrice
 		var cagr, xirr float64
 		if holdingSince != nil {
-			cagr = getCAGR(isin, *holdingSince, time.Now())
-			xirr = getXIRR(isin, *holdingSince, time.Now(), currentValue)
+			cagr = t.getCAGR(isin, *holdingSince, time.Now())
+			xirr = t.getXIRR(isin, *holdingSince, time.Now(), currentValue)
 		}
-		fmt.Println(string(MutualFundsTradebookCache.GetFundNameFromISIN(isin)), cagr, xirr)
+		fmt.Println(string(t.GetFundNameFromISIN(isin)), cagr, xirr)
 		s := models.MFSummary{
-			Name:                  string(MutualFundsTradebookCache.GetFundNameFromISIN(isin)),
+			Name:                  string(t.GetFundNameFromISIN(isin)),
 			ISIN:                  string(isin),
 			HoldingSince:          holdingSinceDuration,
 			HoldingFrom:           time.Duration(lastInvestment.Sub(trades[0].TradeDate).Seconds()),
@@ -226,118 +384,13 @@ func GetMFSummmary(from, to time.Time) []models.MFSummary {
 	return summary
 }
 
-func GetPriceMFTrendInTimeRange(symbol string, from, to time.Time) []models.MFPriceData {
-	if len(mutualFundsHistory[ISIN(symbol)]) == 0 {
-		return nil
-	}
-	startIndex := utils.MomentBinarySearch(mutualFundsHistory[ISIN(symbol)], from)
-	endIndex := utils.MomentBinarySearch(mutualFundsHistory[ISIN(symbol)], to)
-
-	requestedRange := mutualFundsHistory[ISIN(symbol)][startIndex:endIndex]
-	if len(requestedRange) == 0 {
-		return nil
-	}
-	startPrice := requestedRange[0].Price
-	for i := range requestedRange {
-		requestedRange[i].PercentChange = ((requestedRange[i].Price - startPrice) / startPrice) * 100
-	}
-	return requestedRange
+func (t *TradebookService) GetFundNameFromISIN(k ISIN) FundName {
+	return t.MutualFundsTradebookCache.ISINToFundName[k]
 }
 
-func GetGrowthComparison(symbols []string, from, to time.Time) []map[string]interface{} {
-	// This holds, for each timestamp, how much each symbol has changed
-	growthMap := make(map[time.Time]map[string]float32)
-	for _, symbol := range symbols {
-		trend := GetPriceTrendInTimeRange(symbol, from, to)
-		for _, v := range trend {
-			if _, ok := growthMap[v.Timestamps]; !ok {
-				growthMap[v.Timestamps] = make(map[string]float32)
-				for _, s := range symbols {
-					//  init empty value with 0 because some stocks might have started later in the requested time period
-					growthMap[v.Timestamps][s] = 0
-				}
-			}
-			growthMap[v.Timestamps][symbol] = v.PercentChange
-		}
-	}
-
-	response := make([]map[string]interface{}, len(growthMap))
-	index := 0
-	for timeStamp, mapSymbolToPrice := range growthMap {
-		response[index] = make(map[string]interface{})
-		for s, p := range mapSymbolToPrice {
-			response[index][s] = p
-		}
-		response[index]["time"] = timeStamp
-		index++
-	}
-	return response
-}
-
-func GetMFGrowthComparison(symbols []string, from, to time.Time) []map[string]interface{} {
-	growthMap := make(map[time.Time]map[string]float32)
-	for _, symbol := range symbols {
-		trend := GetPriceMFTrendInTimeRange(symbol, from, to)
-		for _, v := range trend {
-			if _, ok := growthMap[v.Timestamps]; !ok {
-				growthMap[v.Timestamps] = make(map[string]float32)
-				for _, s := range symbols {
-					//  init empty value with 0 because some stocks might have started later in the requested time period
-					growthMap[v.Timestamps][s] = 0
-				}
-			}
-			growthMap[v.Timestamps][symbol] = v.PercentChange
-		}
-	}
-
-	response := make([]map[string]interface{}, len(growthMap))
-	index := 0
-	for timeStamp, mapSymbolToPrice := range growthMap {
-		response[index] = make(map[string]interface{})
-		for s, p := range mapSymbolToPrice {
-			fundName := MutualFundsTradebookCache.GetFundNameFromISIN(ISIN(s)).String()
-			response[index][fundName] = p
-		}
-		response[index]["time"] = timeStamp
-		index++
-	}
-	return response
-}
-
-func BuildMFTrendCacheIfMissing() error {
-	_ = os.MkdirAll("./data/trends/MF", os.ModePerm)
-
-	for isin, history := range mutualFundsHistory {
-		if len(history) == 0 {
-			continue
-		}
-
-		filePath := fmt.Sprintf("./data/trends/MF/%s.json", isin)
-		if _, err := os.Stat(filePath); err == nil {
-			continue // file exists, skip
-		}
-
-		startPrice := history[0].Price
-		for i := range history {
-			history[i].PercentChange = ((history[i].Price - startPrice) / startPrice) * 100
-		}
-
-		data, err := json.Marshal(history)
-		if err != nil {
-			return fmt.Errorf("marshal failed for %s: %w", isin, err)
-		}
-
-		if err := os.WriteFile(filePath, data, os.ModePerm); err != nil {
-			return fmt.Errorf("write failed for %s: %w", isin, err)
-		}
-	}
-
-	return nil
-}
-
-func GetEqBreakdown(symbol string) (BreakdownResponse, error) {
+func (t *TradebookService) GetEqBreakdown(symbol string) (BreakdownResponse, error) {
 	script := ScriptName(strings.ToUpper(symbol))
-	trades, ok := EquityTradebookCache.EquityTradebook[script]
+	trades, ok := t.EquityTradebookCache.EquityTradebook[script]
 	if !ok {
 		return BreakdownResponse{}, fmt.Errorf("no data for symbol: %s", symbol)
 	}
