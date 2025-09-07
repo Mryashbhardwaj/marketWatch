@@ -208,3 +208,20 @@ func absDuration(d time.Duration) time.Duration {
 	}
 	return d
 }
+
+// // todo: only use this fucntion
+// func persistTrendInFile(fileName string, trend interface{}) error {
+// 	fileContent, err := json.Marshal(trend)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	dirName := path.Base(fileName)
+
+// 	if _, err := os.Stat(dirName); os.IsNotExist(err) {
+// 		if err := os.MkdirAll(dirName, os.ModePerm); err != nil {
+// 			return errors.Wrap(err, "unable to create trends directory for "+dirName)
+// 		}
+// 	}
+
+// 	return os.WriteFile(fileName, fileContent, os.ModePerm)
+// }

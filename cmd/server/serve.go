@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/Mryashbhardwaj/marketAnalysis/internal/api/handlers"
 	"github.com/Mryashbhardwaj/marketAnalysis/internal/api/routes"
 	"github.com/Mryashbhardwaj/marketAnalysis/internal/config"
 	"github.com/Mryashbhardwaj/marketAnalysis/internal/domain/service"
@@ -65,13 +66,24 @@ func (s *serveCommand) PreRunE(cmd *cobra.Command, _ []string) error {
 
 func (s *serveCommand) RunE(_ *cobra.Command, _ []string) error {
 
-	err := service.BuildCache(s.config)
+	//  get tradebook
+
+	tradebook, err := service.GetTradebookService(
+		s.config.Equity.TradeFilesDirectory,
+		s.config.MutualFunds.TradeFilesDirectory,
+		s.logger)
+
 	if err != nil {
-		s.logger.Error("failed building cache", slog.String("error", err.Error()))
+		s.logger.Error("failed to get tradebook service", slog.String("error", err.Error()))
 		return err
 	}
 
-	router := routes.SetupRouter()
+	mfTrendCache := service.GetMFTrendCache(s.logger, tradebook.MutualFundsTradebookCache.ISINToFundName)
+	equityTrendCache := service.GetEquityTrendCache(s.logger, tradebook.EquityTradebookCache.AllShares)
+
+	handlers := handlers.GetHandler(tradebook, equityTrendCache, mfTrendCache)
+
+	router := routes.SetupRouter(handlers)
 	//  todo: take handlers as new handler and inject logger in handlers.SetupRouter
 
 	// initialise server
