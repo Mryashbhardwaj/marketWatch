@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Mryashbhardwaj/marketAnalysis/internal/domain/models"
-	"github.com/Mryashbhardwaj/marketAnalysis/internal/domain/service"
+	"github.com/Mryashbhardwaj/marketAnalysis/core/trade/models"
+	"github.com/Mryashbhardwaj/marketAnalysis/core/trade/service"
 	"github.com/Mryashbhardwaj/marketAnalysis/internal/utils"
 )
 
