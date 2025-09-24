@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	MC "github.com/Mryashbhardwaj/marketAnalysis/internal/clients/moneyControl"
-	"github.com/Mryashbhardwaj/marketAnalysis/internal/domain/models"
+	"github.com/Mryashbhardwaj/marketAnalysis/core/trade/models"
+	MC "github.com/Mryashbhardwaj/marketAnalysis/external/trackers/moneyControl"
 	"github.com/Mryashbhardwaj/marketAnalysis/internal/utils"
 	"github.com/pkg/errors"
 )

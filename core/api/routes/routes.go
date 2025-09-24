@@ -1,9 +1,11 @@
 package routes
 
 import (
-	"github.com/Mryashbhardwaj/marketAnalysis/internal/api/handlers"
+	"github.com/Mryashbhardwaj/marketAnalysis/core/trade/handlers"
 	"github.com/gorilla/mux"
 )
+
+// create a handler interface here
 
 func SetupRouter(handler *handlers.Handler) *mux.Router {
 	router := mux.NewRouter()

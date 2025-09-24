@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/Mryashbhardwaj/marketAnalysis/internal/api/handlers"
-	"github.com/Mryashbhardwaj/marketAnalysis/internal/api/routes"
-	"github.com/Mryashbhardwaj/marketAnalysis/internal/config"
-	"github.com/Mryashbhardwaj/marketAnalysis/internal/domain/service"
+	"github.com/Mryashbhardwaj/marketAnalysis/core/api/routes"
+	"github.com/Mryashbhardwaj/marketAnalysis/core/config"
+	"github.com/Mryashbhardwaj/marketAnalysis/core/trade/handlers"
+	"github.com/Mryashbhardwaj/marketAnalysis/core/trade/service"
 	"github.com/spf13/cobra"
 )
 
