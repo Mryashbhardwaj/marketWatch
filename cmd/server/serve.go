@@ -7,10 +7,13 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/Mryashbhardwaj/marketAnalysis/config"
 	"github.com/Mryashbhardwaj/marketAnalysis/core/api/routes"
-	"github.com/Mryashbhardwaj/marketAnalysis/core/config"
 	"github.com/Mryashbhardwaj/marketAnalysis/core/trade/handlers"
 	"github.com/Mryashbhardwaj/marketAnalysis/core/trade/service"
+	"github.com/Mryashbhardwaj/marketAnalysis/core/user/middleware"
+	"github.com/Mryashbhardwaj/marketAnalysis/internal/store/postgres"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 )
 
@@ -64,6 +67,20 @@ func (s *serveCommand) PreRunE(cmd *cobra.Command, _ []string) error {
 	return err
 }
 
+func (s *serveCommand) setupDB() (*pgxpool.Pool, error) {
+	err := postgres.Migrate(s.config.DB.DSN)
+	if err != nil {
+		return nil, fmt.Errorf("error initializing migration: %w", err)
+	}
+
+	dbPool, err := postgres.Open(s.config.DB)
+	if err != nil {
+		return dbPool, fmt.Errorf("postgres.Open: %w", err)
+	}
+
+	return dbPool, nil
+}
+
 func (s *serveCommand) RunE(_ *cobra.Command, _ []string) error {
 
 	//  get tradebook
@@ -83,8 +100,16 @@ func (s *serveCommand) RunE(_ *cobra.Command, _ []string) error {
 
 	handlers := handlers.GetHandler(tradebook, equityTrendCache, mfTrendCache)
 
-	router := routes.SetupRouter(handlers)
-	//  todo: take handlers as new handler and inject logger in handlers.SetupRouter
+	dbPool, err := s.setupDB()
+	if err != nil {
+		s.logger.Error("failed to setup database", slog.String("error", err.Error()))
+		return err
+	}
+	defer dbPool.Close()
+
+	auth := middleware.GetAuthMiddleware(s.logger, dbPool, s.config.AuthConfig)
+
+	router := routes.SetupRouter(auth, handlers)
 
 	// initialise server
 	host := ""

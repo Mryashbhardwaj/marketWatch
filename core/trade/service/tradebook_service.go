@@ -1,6 +1,7 @@
 package service
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"log/slog"
@@ -45,6 +46,7 @@ type MutualFundsTradebook struct {
 }
 
 type TradebookService struct {
+	db                        *sql.DB
 	logger                    *slog.Logger
 	EquityTradebookCache      *EquityTradebook
 	MutualFundsTradebookCache *MutualFundsTradebook

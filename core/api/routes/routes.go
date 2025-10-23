@@ -1,14 +1,24 @@
 package routes
 
 import (
+	"net/http"
+
 	"github.com/Mryashbhardwaj/marketAnalysis/core/trade/handlers"
 	"github.com/gorilla/mux"
 )
 
 // create a handler interface here
 
-func SetupRouter(handler *handlers.Handler) *mux.Router {
+type AuthMiddleware interface {
+	Authenticate(next http.Handler) http.Handler
+}
+
+func SetupRouter(authMiddleware AuthMiddleware, handler *handlers.Handler) *mux.Router {
 	router := mux.NewRouter()
+
+	// router.HandleFunc("/api/user/login", handler.Login).Methods("POST")
+	// router.HandleFunc("/api/user/logout", handler.LogOut).Methods("POST")
+	// router.HandleFunc("/api/user/profile", handler.Profile).Methods("POST")
 
 	router.HandleFunc("/api/equity/list", handler.GetEquityList).Methods("GET")
 	router.HandleFunc("/api/equity/trend", handler.GetTrend).Methods("GET")
@@ -22,6 +32,8 @@ func SetupRouter(handler *handlers.Handler) *mux.Router {
 	router.HandleFunc("/api/mutual_funds/summary", handler.GetMFSummary).Methods("GET")
 	router.HandleFunc("/api/mutual_funds/trend/compare", handler.GetMFGrowthComparison).Methods("GET")
 	router.HandleFunc("/api/mutual_funds/history/refresh", handler.RefreshMFPriceHistory).Methods("GET")
+
+	router.Use(authMiddleware.Authenticate)
 
 	return router
 }

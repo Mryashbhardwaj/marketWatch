@@ -88,6 +88,10 @@ func RespondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
 	}
 }
 
+func RespondWithError(w http.ResponseWriter, code int, message string) {
+	RespondWithJSON(w, code, map[string]string{"error": message})
+}
+
 type TimeGetter interface {
 	GetTime() time.Time
 }
